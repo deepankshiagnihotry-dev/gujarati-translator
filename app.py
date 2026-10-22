@@ -2,7 +2,7 @@ import base64
 import io
 import streamlit as st
 from sarvamai import SarvamAI
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 from gtts import gTTS
 
 st.set_page_config(
@@ -11,7 +11,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Custom Styling
+# Custom UI Styling
 st.markdown("""
 <style>
 .stApp {
@@ -37,20 +37,27 @@ st.markdown("""
 </style>
 <div class="hero">
     <h1>🌼 ગુજરાતી મિત્ર</h1>
-    <p>Your English-to-Gujarati voice translator for STEM TLMs</p>
+    <p>Your English-to-Gujarati voice & text translator for STEM TLMs</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar Configuration for Custom API Key
-st.sidebar.title("⚙️ API Configuration")
+# Sidebar Configuration with Clear Instructions
+st.sidebar.title("⚙️ API Settings")
+st.sidebar.info(
+    "💡 **How this works:**\n\n"
+    "This app uses Sarvam AI as its primary engine for Gujarati translation and speech.\n\n"
+    "If you have a Sarvam API key, enter it below. If left blank or if credits expire, "
+    "the app automatically switches to free open-source fallbacks!"
+)
+
 custom_key = st.sidebar.text_input(
-    "Enter your Sarvam API Key:",
+    "Enter Sarvam API Key (Optional):",
     type="password",
-    help="Optional: Enter your own Sarvam API Key to bypass quota limits."
+    help="Leave blank to use default secrets or free backup engines."
 )
 
 def get_sarvam_client():
-    """Fetches the Sarvam client using user key or default Streamlit secrets."""
+    """Fetches the Sarvam client using sidebar key or default Streamlit secrets."""
     key = custom_key.strip() if custom_key.strip() else st.secrets.get("SARVAM_API_KEY", "")
     if key:
         try:
@@ -60,7 +67,11 @@ def get_sarvam_client():
     return None
 
 def translate_text(text):
-    """Attempts Sarvam AI translation first, falls back to deep-translator."""
+    """
+    Primary: Sarvam AI (Mayura:v1)
+    Fallback 1: Google Translate
+    Fallback 2: MyMemory (if Google hits rate limits)
+    """
     client = get_sarvam_client()
     if client:
         try:
@@ -72,14 +83,22 @@ def translate_text(text):
             )
             return response.translated_text, "Sarvam AI (Mayura)"
         except Exception:
-            st.toast("Sarvam API limit reached or error. Falling back to open-source translator.", icon="⚠️")
+            st.toast("Sarvam AI quota reached or invalid key. Switching to free open-source fallback.", icon="⚠️")
     
-    # Fallback to free Google Translator
-    translated = GoogleTranslator(src='en', dest='gu').translate(text)
-    return translated, "Open-Source (Google Translate)"
+    # Fallback 1: Google Translate
+    try:
+        translated = GoogleTranslator(src='en', dest='gu').translate(text)
+        return translated, "Free Fallback (Google)"
+    except Exception:
+        # Fallback 2: MyMemory Translator
+        try:
+            translated = MyMemoryTranslator(source='en-IN', target='gu-IN').translate(text)
+            return translated, "Free Fallback (MyMemory)"
+        except Exception:
+            return "Translation temporarily busy. Please try again in a few moments.", "Error"
 
 def speak_gujarati(text):
-    """Attempts Sarvam AI TTS first, falls back to gTTS."""
+    """Attempts Sarvam AI TTS first, falls back to free gTTS."""
     client = get_sarvam_client()
     if client:
         try:
@@ -91,9 +110,9 @@ def speak_gujarati(text):
             )
             return base64.b64decode("".join(response.audios)), "audio/wav"
         except Exception:
-            st.toast("Sarvam TTS quota reached. Falling back to gTTS.", icon="⚠️")
+            st.toast("Sarvam TTS quota reached. Switching to gTTS audio.", icon="⚠️")
     
-    # Fallback to free gTTS
+    # Fallback: Free gTTS
     tts = gTTS(text=text, lang='gu')
     audio_fp = io.BytesIO()
     tts.write_to_fp(audio_fp)
@@ -131,7 +150,7 @@ if st.button("🌐 Translate typed text", type="primary", use_container_width=Tr
     if not typed_text.strip():
         st.warning("Please enter some English text.")
     else:
-        with st.spinner("Translating..."):
+        with st.spinner("Translating into Gujarati..."):
             result, engine = translate_text(typed_text.strip())
             save_translation(typed_text.strip(), result, engine)
             st.rerun()
@@ -168,7 +187,7 @@ if recording is not None:
             except Exception:
                 st.error("Sarvam STT failed. Check your API credits or enter a valid API key in the sidebar.")
         else:
-            st.error("Sarvam API key required for speech recognition.")
+            st.error("A valid Sarvam API key is required for voice-to-text input. Use text input for free fallback mode.")
 
 # --- Output Section ---
 if st.session_state.translation:
