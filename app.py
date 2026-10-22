@@ -1,5 +1,6 @@
 import base64
 import io
+import requests
 import streamlit as st
 from sarvamai import SarvamAI
 from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -11,7 +12,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Custom UI Styling
+# Custom Styling
 st.markdown("""
 <style>
 .stApp {
@@ -37,28 +38,33 @@ st.markdown("""
 </style>
 <div class="hero">
     <h1>🌼 ગુજરાતી મિત્ર</h1>
-    <p>Your English-to-Gujarati voice & text translator for STEM TLMs</p>
+    <p>Multi-Engine English-to-Gujarati Voice & Text Tool for STEM TLMs</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar Configuration with Clear Instructions
-st.sidebar.title("⚙️ API Settings")
+# Sidebar Configuration
+st.sidebar.title("⚙️ Engine & API Settings")
 st.sidebar.info(
-    "💡 **How this works:**\n\n"
-    "This app uses Sarvam AI as its primary engine for Gujarati translation and speech.\n\n"
-    "If you have a Sarvam API key, enter it below. If left blank or if credits expire, "
-    "the app automatically switches to free open-source fallbacks!"
+    "💡 **Resilient Multi-Engine Pipeline:**\n\n"
+    "1. **Bhashini (MeitY)** (if configured)\n"
+    "2. **Sarvam AI** (if key provided)\n"
+    "3. **Free Open-Source Fallback** (Google / MyMemory)\n\n"
+    "If primary quotas expire, the app automatically switches to backup engines!"
 )
 
-custom_key = st.sidebar.text_input(
-    "Enter Sarvam API Key (Optional):",
+custom_sarvam_key = st.sidebar.text_input(
+    "Sarvam API Key (Optional):",
     type="password",
-    help="Leave blank to use default secrets or free backup engines."
+    help="Enter key or leave blank for automatic fallback."
 )
+
+with st.sidebar.expander("🏛️ Bhashini API Configuration (Optional)"):
+    bhashini_user_id = st.text_input("Bhashini User ID", type="password")
+    bhashini_api_key = st.text_input("Bhashini API Key", type="password")
+    bhashini_pipeline_id = st.text_input("Pipeline ID", value="64392e20e3204922a8627883")
 
 def get_sarvam_client():
-    """Fetches the Sarvam client using sidebar key or default Streamlit secrets."""
-    key = custom_key.strip() if custom_key.strip() else st.secrets.get("SARVAM_API_KEY", "")
+    key = custom_sarvam_key.strip() if custom_sarvam_key.strip() else st.secrets.get("SARVAM_API_KEY", "")
     if key:
         try:
             return SarvamAI(api_subscription_key=key)
@@ -66,12 +72,57 @@ def get_sarvam_client():
             return None
     return None
 
+def translate_bhashini(text, user_id, api_key, pipeline_id):
+    """Translates text using Bhashini's ULCA API pipeline."""
+    url = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
+    headers = {
+        "Content-Type": "application/json",
+        "userID": user_id,
+        "ulcaApiKey": api_key
+    }
+    payload = {
+        "pipelineTasks": [
+            {
+                "taskType": "translation",
+                "config": {
+                    "language": {
+                        "sourceLanguage": "en",
+                        "targetLanguage": "gu"
+                    },
+                    "serviceId": "ai4bharat/indictrans-v2-all-gpu--tda"
+                }
+            }
+        ],
+        "inputData": {
+            "input": [{"source": text}]
+        }
+    }
+    response = requests.post(url, headers=headers, json=payload, timeout=5)
+    if response.status_code == 200:
+        data = response.json()
+        return data["pipelineResponse"][0]["output"][0]["target"]
+    raise Exception(f"Bhashini API Error: {response.status_code}")
+
 def translate_text(text):
     """
-    Primary: Sarvam AI (Mayura:v1)
-    Fallback 1: Google Translate
-    Fallback 2: MyMemory (if Google hits rate limits)
+    Priority 1: Bhashini API (if credentials entered)
+    Priority 2: Sarvam AI (Mayura:v1)
+    Priority 3: Google Translate
+    Priority 4: MyMemory (Rate-limit backup)
     """
+    # 1. Try Bhashini
+    u_id = bhashini_user_id.strip() or st.secrets.get("BHASHINI_USER_ID", "")
+    a_key = bhashini_api_key.strip() or st.secrets.get("BHASHINI_API_KEY", "")
+    p_id = bhashini_pipeline_id.strip() or st.secrets.get("BHASHINI_PIPELINE_ID", "")
+
+    if u_id and a_key:
+        try:
+            translated = translate_bhashini(text, u_id, a_key, p_id)
+            return translated, "Bhashini (MeitY)"
+        except Exception:
+            st.toast("Bhashini quota/credentials issue. Switching to Sarvam AI...", icon="⚠️")
+
+    # 2. Try Sarvam AI
     client = get_sarvam_client()
     if client:
         try:
@@ -83,22 +134,22 @@ def translate_text(text):
             )
             return response.translated_text, "Sarvam AI (Mayura)"
         except Exception:
-            st.toast("Sarvam AI quota reached or invalid key. Switching to free open-source fallback.", icon="⚠️")
-    
-    # Fallback 1: Google Translate
+            st.toast("Sarvam AI quota reached. Switching to free fallback...", icon="⚠️")
+
+    # 3. Fallback: Google Translate
     try:
         translated = GoogleTranslator(src='en', dest='gu').translate(text)
         return translated, "Free Fallback (Google)"
     except Exception:
-        # Fallback 2: MyMemory Translator
+        # 4. Fallback: MyMemory
         try:
             translated = MyMemoryTranslator(source='en-IN', target='gu-IN').translate(text)
             return translated, "Free Fallback (MyMemory)"
         except Exception:
-            return "Translation temporarily busy. Please try again in a few moments.", "Error"
+            return "Translation temporarily unavailable. Please try again later.", "Error"
 
 def speak_gujarati(text):
-    """Attempts Sarvam AI TTS first, falls back to free gTTS."""
+    """Attempts Sarvam AI TTS first, falls back to gTTS."""
     client = get_sarvam_client()
     if client:
         try:
@@ -110,9 +161,9 @@ def speak_gujarati(text):
             )
             return base64.b64decode("".join(response.audios)), "audio/wav"
         except Exception:
-            st.toast("Sarvam TTS quota reached. Switching to gTTS audio.", icon="⚠️")
-    
-    # Fallback: Free gTTS
+            st.toast("Sarvam TTS quota reached. Switching to gTTS.", icon="⚠️")
+
+    # Free Fallback: gTTS
     tts = gTTS(text=text, lang='gu')
     audio_fp = io.BytesIO()
     tts.write_to_fp(audio_fp)
@@ -150,7 +201,7 @@ if st.button("🌐 Translate typed text", type="primary", use_container_width=Tr
     if not typed_text.strip():
         st.warning("Please enter some English text.")
     else:
-        with st.spinner("Translating into Gujarati..."):
+        with st.spinner("Translating..."):
             result, engine = translate_text(typed_text.strip())
             save_translation(typed_text.strip(), result, engine)
             st.rerun()
@@ -176,7 +227,7 @@ if recording is not None:
                         language_code="en-IN"
                     )
                     english = transcript.transcript.strip()
-                
+
                 if english:
                     with st.spinner("Translating..."):
                         gujarati, engine = translate_text(english)
@@ -185,9 +236,9 @@ if recording is not None:
                 else:
                     st.warning("No speech recognized. Please try recording again.")
             except Exception:
-                st.error("Sarvam STT failed. Check your API credits or enter a valid API key in the sidebar.")
+                st.error("Sarvam STT failed. Check your API credits.")
         else:
-            st.error("A valid Sarvam API key is required for voice-to-text input. Use text input for free fallback mode.")
+            st.error("Sarvam API key required for speech recognition. Use text input for free fallback mode.")
 
 # --- Output Section ---
 if st.session_state.translation:
@@ -217,4 +268,4 @@ if st.session_state.history:
             st.markdown(f"**ગુજરાતી:** {gujarati} *(via {engine})*")
             st.divider()
 
-st.caption("Powered by Sarvam AI · Made with ❤️ for Gujarati STEM Education")
+st.caption("Multi-Engine Indic Architecture · Built for Gujarati STEM Education")
