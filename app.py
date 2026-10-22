@@ -53,7 +53,7 @@ def init_db():
     conn = sqlite3.connect("stem_memory.db")
     c = conn.cursor()
     
-    # Users table (Stores Email as primary identifier)
+    # Base Table Creation
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY,
@@ -61,7 +61,6 @@ def init_db():
         )
     """)
     
-    # Per-user adaptive translation memory
     c.execute("""
         CREATE TABLE IF NOT EXISTS translation_memory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,7 +71,6 @@ def init_db():
         )
     """)
     
-    # Per-user project history
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,15 +83,29 @@ def init_db():
     """)
     conn.commit()
 
-    # --- Migration Check for Existing Database Files ---
+    # --- Migration Checks for Old Database Files ---
+    # 1. Migration for 'users' table (Fixes: table users has no column named email)
+    c.execute("PRAGMA table_info(users)")
+    user_columns = [col[1] for col in c.fetchall()]
+    if "email" not in user_columns:
+        if "username" in user_columns:
+            try:
+                c.execute("ALTER TABLE users RENAME COLUMN username TO email")
+            except Exception:
+                c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        else:
+            c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+
+    # 2. Migration for 'translation_memory'
     c.execute("PRAGMA table_info(translation_memory)")
-    columns = [col[1] for col in c.fetchall()]
-    if "username" not in columns:
+    mem_columns = [col[1] for col in c.fetchall()]
+    if "username" not in mem_columns:
         c.execute("ALTER TABLE translation_memory ADD COLUMN username TEXT DEFAULT 'default_user'")
 
+    # 3. Migration for 'user_history'
     c.execute("PRAGMA table_info(user_history)")
-    columns_hist = [col[1] for col in c.fetchall()]
-    if "username" not in columns_hist:
+    hist_columns = [col[1] for col in c.fetchall()]
+    if "username" not in hist_columns:
         c.execute("ALTER TABLE user_history ADD COLUMN username TEXT DEFAULT 'default_user'")
 
     conn.commit()
