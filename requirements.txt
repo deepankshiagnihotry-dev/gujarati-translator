@@ -2,3 +2,4 @@ streamlit
 sarvamai
 deep-translator
 gTTS
+requests
