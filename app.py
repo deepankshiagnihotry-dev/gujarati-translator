@@ -48,17 +48,19 @@ st.markdown("""
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# --- Database Setup (Multi-User Isolated Memory) ---
+# --- Database Setup & Migration (Prevents OperationalError) ---
 def init_db():
     conn = sqlite3.connect("stem_memory.db")
     c = conn.cursor()
-    # Users table
+    
+    # Users table (Stores Email as primary identifier)
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
+            email TEXT PRIMARY KEY,
             password TEXT
         )
     """)
+    
     # Per-user adaptive translation memory
     c.execute("""
         CREATE TABLE IF NOT EXISTS translation_memory (
@@ -66,10 +68,10 @@ def init_db():
             username TEXT,
             english_text TEXT,
             gujarati_translation TEXT,
-            source TEXT,
-            UNIQUE(username, english_text)
+            source TEXT
         )
     """)
+    
     # Per-user project history
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_history (
@@ -82,16 +84,29 @@ def init_db():
         )
     """)
     conn.commit()
+
+    # --- Migration Check for Existing Database Files ---
+    c.execute("PRAGMA table_info(translation_memory)")
+    columns = [col[1] for col in c.fetchall()]
+    if "username" not in columns:
+        c.execute("ALTER TABLE translation_memory ADD COLUMN username TEXT DEFAULT 'default_user'")
+
+    c.execute("PRAGMA table_info(user_history)")
+    columns_hist = [col[1] for col in c.fetchall()]
+    if "username" not in columns_hist:
+        c.execute("ALTER TABLE user_history ADD COLUMN username TEXT DEFAULT 'default_user'")
+
+    conn.commit()
     conn.close()
 
 init_db()
 
 # --- User Auth Helpers ---
-def register_user(username, password):
+def register_user(email, password):
     conn = sqlite3.connect("stem_memory.db")
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username.strip().lower(), hash_password(password)))
+        c.execute("INSERT INTO users (email, password) VALUES (?, ?)", (email.strip().lower(), hash_password(password)))
         conn.commit()
         conn.close()
         return True
@@ -99,17 +114,30 @@ def register_user(username, password):
         conn.close()
         return False
 
-def authenticate_user(username, password):
+def authenticate_user(email, password):
     conn = sqlite3.connect("stem_memory.db")
     c = conn.cursor()
-    c.execute("SELECT password FROM users WHERE username = ?", (username.strip().lower(),))
+    c.execute("SELECT password FROM users WHERE email = ?", (email.strip().lower(),))
     row = c.fetchone()
     conn.close()
     if row and row[0] == hash_password(password):
         return True
     return False
 
-# --- Database Operations (Filtered by Username) ---
+def reset_password(email, new_password):
+    conn = sqlite3.connect("stem_memory.db")
+    c = conn.cursor()
+    c.execute("SELECT email FROM users WHERE email = ?", (email.strip().lower(),))
+    row = c.fetchone()
+    if row:
+        c.execute("UPDATE users SET password = ? WHERE email = ?", (hash_password(new_password), email.strip().lower()))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
+
+# --- Database Operations (Filtered by User) ---
 def get_memory(username, text):
     conn = sqlite3.connect("stem_memory.db")
     c = conn.cursor()
@@ -124,7 +152,6 @@ def save_memory(username, english, gujarati, source="Human Expert Correction"):
     c.execute("""
         INSERT INTO translation_memory (username, english_text, gujarati_translation, source)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(username, english_text) DO UPDATE SET gujarati_translation=excluded.gujarati_translation, source=excluded.source
     """, (username, english.strip(), gujarati.strip(), source))
     conn.commit()
     conn.close()
@@ -159,31 +186,43 @@ if "current_engine" not in st.session_state:
 # --- Authentication Screen ---
 if not st.session_state.logged_in:
     st.markdown("### 🔐 User Login & Project Isolation")
-    tab_login, tab_register = st.tabs(["🔑 Login", "📝 Register New Account"])
+    tab_login, tab_register, tab_reset = st.tabs(["🔑 Login", "📝 Register New Account", "🔄 Reset Password"])
     
     with tab_login:
-        login_user = st.text_input("Username", key="login_user")
+        login_email = st.text_input("Email Address", key="login_email")
         login_pass = st.text_input("Password", type="password", key="login_pass")
         if st.button("Log In", type="primary", use_container_width=True):
-            if authenticate_user(login_user, login_pass):
+            if authenticate_user(login_email, login_pass):
                 st.session_state.logged_in = True
-                st.session_state.username = login_user.strip().lower()
+                st.session_state.username = login_email.strip().lower()
                 st.success(f"Welcome back, {st.session_state.username}!")
                 st.rerun()
             else:
-                st.error("Invalid username or password.")
+                st.error("Invalid email or password.")
                 
     with tab_register:
-        reg_user = st.text_input("Choose Username", key="reg_user")
+        reg_email = st.text_input("Email Address", key="reg_email")
         reg_pass = st.text_input("Choose Password", type="password", key="reg_pass")
         if st.button("Create Account", use_container_width=True):
-            if reg_user.strip() and reg_pass.strip():
-                if register_user(reg_user, reg_pass):
+            if reg_email.strip() and reg_pass.strip():
+                if register_user(reg_email, reg_pass):
                     st.success("Account created successfully! Please switch to the Login tab.")
                 else:
-                    st.error("Username already exists. Please choose another.")
+                    st.error("Account with this email already exists.")
             else:
-                st.warning("Please enter both username and password.")
+                st.warning("Please enter both email and password.")
+
+    with tab_reset:
+        reset_email = st.text_input("Registered Email Address", key="reset_email")
+        new_pass = st.text_input("New Password", type="password", key="new_pass")
+        if st.button("Reset Password", use_container_width=True):
+            if reset_email.strip() and new_pass.strip():
+                if reset_password(reset_email, new_pass):
+                    st.success("Password updated successfully! You can now log in.")
+                else:
+                    st.error("Email not found in our records.")
+            else:
+                st.warning("Please fill in all fields.")
     st.stop()
 
 # --- Sidebar Configuration ---
@@ -197,14 +236,26 @@ if st.sidebar.button("🚪 Log Out"):
 
 st.sidebar.markdown("---")
 st.sidebar.title("⚙️ Engine & API Settings")
-custom_sarvam_key = st.sidebar.text_input("Sarvam API Key (Optional):", type="password")
+st.sidebar.info(
+    "💡 **Multi-Engine Pipeline:**\n\n"
+    "0. **Personal Adaptive Memory** (Your verified edits)\n"
+    "1. **Bhashini (MeitY)** (if configured)\n"
+    "2. **Sarvam AI** (if key provided)\n"
+    "3. **Free Open-Source Fallback** (Google / MyMemory)"
+)
+
+custom_sarvam_key = st.sidebar.text_input(
+    "Sarvam API Key (Optional):",
+    type="password",
+    help="Enter key or leave blank for automatic fallback."
+)
 
 with st.sidebar.expander("🏛️ Bhashini API Configuration (Optional)"):
     bhashini_user_id = st.text_input("Bhashini User ID", type="password")
     bhashini_api_key = st.text_input("Bhashini API Key", type="password")
     bhashini_pipeline_id = st.text_input("Pipeline ID", value="64392e20e3204922a8627883")
 
-# --- Translation Logic ---
+# --- Translation & Speech Helpers ---
 def get_sarvam_client():
     key = custom_sarvam_key.strip() if custom_sarvam_key.strip() else st.secrets.get("SARVAM_API_KEY", "")
     if key:
@@ -227,7 +278,7 @@ def translate_bhashini(text, user_id, api_key, pipeline_id):
     raise Exception("Bhashini Error")
 
 def translate_text(text):
-    # 0. Check User's Isolated Memory
+    # 0. Check User's Personal Memory First
     cached = get_memory(st.session_state.username, text)
     if cached:
         return cached, "Personal Adaptive Memory"
@@ -274,11 +325,11 @@ def speak_gujarati(text):
     fp.seek(0)
     return fp.getvalue(), "audio/mp3"
 
-# --- Main Workspace UI ---
-st.markdown("### ✍️ Translate & Refine STEM Content")
-english_input = st.text_area("English Source Sentence:", value=st.session_state.current_english, height=100)
+# --- Main Text Input Section ---
+st.markdown("### ✍️ Type in English")
+english_input = st.text_area("English text", value=st.session_state.current_english, placeholder="For example: Gravity pulls objects toward the Earth's center.", height=100)
 
-if st.button("🌐 Translate", type="primary", use_container_width=True):
+if st.button("🌐 Translate typed text", type="primary", use_container_width=True):
     if english_input.strip():
         with st.spinner("Translating..."):
             gujarati_result, engine_used = translate_text(english_input.strip())
@@ -288,7 +339,44 @@ if st.button("🌐 Translate", type="primary", use_container_width=True):
             log_session(st.session_state.username, st.session_state.current_english, st.session_state.current_gujarati, engine_used)
             st.rerun()
 
-# --- Interactive Edit & Learning Section ---
+st.markdown("---")
+
+# --- Speech Input Section ---
+st.markdown("### 🎙️ Speak English")
+st.caption("Tap the microphone, speak your STEM sentence, and stop recording.")
+
+recording = st.audio_input("Record English speech")
+
+if recording is not None:
+    st.audio(recording)
+    if st.button("🎧 Transcribe and translate", use_container_width=True):
+        client = get_sarvam_client()
+        if client:
+            try:
+                with st.spinner("Recognizing speech via Sarvam Saaras..."):
+                    transcript = client.speech_to_text.transcribe(
+                        file=recording,
+                        model="saaras:v3",
+                        language_code="en-IN"
+                    )
+                    english = transcript.transcript.strip()
+
+                if english:
+                    with st.spinner("Translating..."):
+                        gujarati, engine = translate_text(english)
+                        st.session_state.current_english = english
+                        st.session_state.current_gujarati = gujarati
+                        st.session_state.current_engine = engine
+                        log_session(st.session_state.username, english, gujarati, engine)
+                        st.rerun()
+                else:
+                    st.warning("No speech recognized. Please try recording again.")
+            except Exception:
+                st.error("Sarvam STT failed. Check your API credits.")
+        else:
+            st.error("Sarvam API key required for speech recognition. Use text input for free fallback mode.")
+
+# --- Interactive Output & Learning Section ---
 if st.session_state.current_gujarati:
     st.markdown("---")
     st.markdown(f"### 📝 ગુજરાતી અનુવાદ *(Engine: {st.session_state.current_engine})*")
@@ -312,7 +400,7 @@ if st.session_state.current_gujarati:
                 audio_bytes, audio_format = speak_gujarati(edited_gujarati)
                 st.audio(audio_bytes, format=audio_format)
 
-# --- Persistent Progress Section ---
+# --- Persistent History Section ---
 st.markdown("---")
 st.markdown("### 📜 Your Saved Projects & History")
 history = get_recent_history(st.session_state.username)
