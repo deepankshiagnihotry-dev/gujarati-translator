@@ -1,3 +1,5 @@
-streamlit>=1.40.0
+streamlit
 sarvamai
+deep-translator
+gTTS
 
