@@ -230,3 +230,103 @@ def translate_text(text):
     # 0. Check User's Isolated Memory
     cached = get_memory(st.session_state.username, text)
     if cached:
+        return cached, "Personal Adaptive Memory"
+
+    # 1. Try Bhashini
+    u_id = bhashini_user_id.strip() or st.secrets.get("BHASHINI_USER_ID", "")
+    a_key = bhashini_api_key.strip() or st.secrets.get("BHASHINI_API_KEY", "")
+    p_id = bhashini_pipeline_id.strip() or st.secrets.get("BHASHINI_PIPELINE_ID", "")
+    if u_id and a_key:
+        try:
+            return translate_bhashini(text, u_id, a_key, p_id), "Bhashini (MeitY)"
+        except Exception:
+            st.toast("Bhashini unavailable. Switching to Sarvam AI...", icon="⚠️")
+
+    # 2. Try Sarvam AI
+    client = get_sarvam_client()
+    if client:
+        try:
+            res = client.text.translate(input=text, source_language_code="en-IN", target_language_code="gu-IN", model="mayura:v1")
+            return res.translated_text, "Sarvam AI (Mayura)"
+        except Exception:
+            st.toast("Sarvam AI quota reached. Switching to free fallback...", icon="⚠️")
+
+    # 3. Fallback: Google Translate
+    try:
+        return GoogleTranslator(src='en', dest='gu').translate(text), "Google Translate"
+    except Exception:
+        try:
+            return MyMemoryTranslator(source='en-IN', target='gu-IN').translate(text), "MyMemory Engine"
+        except Exception:
+            return "Translation temporarily unavailable.", "Error"
+
+def speak_gujarati(text):
+    client = get_sarvam_client()
+    if client:
+        try:
+            res = client.text_to_speech.convert(text=text, model="bulbul:v3", language_code="gu-IN", speaker="ritu")
+            return base64.b64decode("".join(res.audios)), "audio/wav"
+        except Exception:
+            pass
+    tts = gTTS(text=text, lang='gu')
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    return fp.getvalue(), "audio/mp3"
+
+# --- Main Workspace UI ---
+st.markdown("### ✍️ Translate & Refine STEM Content")
+english_input = st.text_area("English Source Sentence:", value=st.session_state.current_english, height=100)
+
+if st.button("🌐 Translate", type="primary", use_container_width=True):
+    if english_input.strip():
+        with st.spinner("Translating..."):
+            gujarati_result, engine_used = translate_text(english_input.strip())
+            st.session_state.current_english = english_input.strip()
+            st.session_state.current_gujarati = gujarati_result
+            st.session_state.current_engine = engine_used
+            log_session(st.session_state.username, st.session_state.current_english, st.session_state.current_gujarati, engine_used)
+            st.rerun()
+
+# --- Interactive Edit & Learning Section ---
+if st.session_state.current_gujarati:
+    st.markdown("---")
+    st.markdown(f"### 📝 ગુજરાતી અનુવાદ *(Engine: {st.session_state.current_engine})*")
+    
+    edited_gujarati = st.text_area(
+        "Edit & Improve Translation (Saved specifically to your account):",
+        value=st.session_state.current_gujarati,
+        height=120
+    )
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Save Improvement to My Memory", use_container_width=True):
+            save_memory(st.session_state.username, st.session_state.current_english, edited_gujarati, "Human Expert Correction")
+            log_session(st.session_state.username, st.session_state.current_english, edited_gujarati, "Human Correction")
+            st.success("✅ Saved to your personal memory bank!")
+    
+    with col2:
+        if st.button("🔊 Listen to Audio", use_container_width=True):
+            with st.spinner("Generating audio..."):
+                audio_bytes, audio_format = speak_gujarati(edited_gujarati)
+                st.audio(audio_bytes, format=audio_format)
+
+# --- Persistent Progress Section ---
+st.markdown("---")
+st.markdown("### 📜 Your Saved Projects & History")
+history = get_recent_history(st.session_state.username)
+
+if history:
+    for row_id, eng, guj, eng_name, tstamp in history:
+        with st.expander(f"🕒 {tstamp} | {eng[:40]}..."):
+            st.markdown(f"**English:** {eng}")
+            st.markdown(f"**Gujarati:** {guj}")
+            st.caption(f"Source: {eng_name}")
+            if st.button("Load back into editor", key=f"load_btn_{row_id}"):
+                st.session_state.current_english = eng
+                st.session_state.current_gujarati = guj
+                st.session_state.current_engine = eng_name
+                st.rerun()
+else:
+    st.info("No saved translation history for your account yet.")
